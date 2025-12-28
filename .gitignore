@@ -66,3 +66,9 @@ data/
 4}
 test.py
 depcheck.json
+
+# Static audio files (keep only latest)
+bci_flask_services/static/music/*.mp3
+bci_flask_services/static/music/*.wav
+!bci_flask_services/static/music/pop_guitar_1_20251226_235629.wav
+!bci_flask_services/static/music/.gitkeep
