@@ -1,0 +1,68 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.production
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Cache
+.cache/
+.claude/
+hf_cache/
+
+# Model files (large files)
+musicgenmodel/
+audiocraft/
+
+# Archive and packaging
+_archive/
+packaging/
+
+# Frontend dist in backend
+bci_flask_services/frontend_dist/
+
+# Database
+*.db
+*.sqlite
+
+# Android build
+android/
+
+# Electron
+electron/
+
+# Uniapp
+uniapp/
+
+# Data folder
+data/
+
+# Temporary files
+*.tmp
+*.temp
+4.36.0
+4}
+test.py
+depcheck.json

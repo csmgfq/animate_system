@@ -1,0 +1,100 @@
+:root {
+  --app-bg: #f6f8f7;
+  --app-surface: #ffffff;
+  --app-surface-2: #f1f5f3;
+  --app-text: #16211e;
+  --app-text-2: rgba(22, 33, 30, 0.72);
+  --app-border: rgba(22, 33, 30, 0.12);
+
+  --app-primary: #2e7d32;
+  --app-primary-2: #1b5e20;
+
+  --app-radius: 14px;
+  --app-radius-sm: 10px;
+  --app-shadow: 0 12px 34px rgba(0, 0, 0, 0.08);
+  --app-shadow-sm: 0 6px 18px rgba(0, 0, 0, 0.08);
+
+  --app-gap: 16px;
+  --app-gap-sm: 12px;
+  --app-header-h: 64px;
+
+  --app-aside-bg: #0b2d25;
+  --app-aside-text: rgba(255, 255, 255, 0.88);
+  --app-aside-active: #7ddc93;
+
+  /* Element Plus theme overrides (minimal) */
+  --el-color-primary: var(--app-primary);
+  --el-border-radius-base: var(--app-radius-sm);
+  --el-border-color: var(--app-border);
+  --el-text-color-primary: var(--app-text);
+  --el-text-color-regular: var(--app-text-2);
+  --el-bg-color: var(--app-surface);
+  --el-fill-color-blank: var(--app-surface);
+}
+
+@media (max-width: 768px) {
+  :root {
+    --app-gap: 12px;
+    --app-header-h: 56px;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  color: var(--app-text);
+  background:
+    radial-gradient(1100px 700px at 20% 0%, rgba(125, 220, 147, 0.25), rgba(255, 255, 255, 0) 60%),
+    radial-gradient(1100px 700px at 100% 20%, rgba(46, 125, 50, 0.16), rgba(255, 255, 255, 0) 55%),
+    var(--app-bg);
+}
+
+#app {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Better defaults on mobile with safe areas */
+.safe-area {
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Subtle, consistent card look for custom containers */
+.app-surface {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  box-shadow: var(--app-shadow-sm);
+}
+
+/* Reduce heavy pointer effects on touch devices */
+@media (hover: none), (pointer: coarse) {
+  .js-cursor-container,
+  .firework-canvas {
+    display: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
