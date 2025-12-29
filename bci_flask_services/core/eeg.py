@@ -16,7 +16,7 @@ import queue
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Union, Any, Callable
+from typing import Optional, Union
 import numpy as np
 
 StrPath = Union[str, Path]
@@ -46,7 +46,8 @@ class RealtimeStats:
         self.eeg_seq = 0
         self.eeg_received = 0
         self.eeg_loss_rate = 0.0
-        self.eeg_supplement = 0
+        self.eeg_dropped = 0
+        self.eeg_padded = 0
         self.eeg_connected = False
         self.eeg_first_packet = False
         self.eeg_first_seq = None
@@ -54,7 +55,8 @@ class RealtimeStats:
         self.trigger_seq = 0
         self.trigger_received = 0
         self.trigger_loss_rate = 0.0
-        self.trigger_supplement = 0
+        self.trigger_dropped = 0
+        self.trigger_padded = 0
         self.trigger_connected = False
         self.trigger_first_packet = False
         self.trigger_first_seq = None
@@ -64,28 +66,30 @@ class RealtimeStats:
         self.session_id = ""
         self.start_time = None
 
-    def update_eeg(self, seq: int, received: int, supplement: int = 0):
+    def update_eeg(self, seq: int, received: int, dropped: int = 0, padded: int = 0):
         """更新 EEG 统计信息"""
         with self.lock:
             self.eeg_seq = seq
             self.eeg_received = received
-            self.eeg_supplement = supplement
+            self.eeg_dropped = dropped
+            self.eeg_padded = padded
             if self.eeg_first_seq is None:
                 self.eeg_first_seq = seq
-            total_expected = received + supplement
-            self.eeg_loss_rate = 100 * (supplement / total_expected) if total_expected > 0 else 0
+            total_expected = received + dropped
+            self.eeg_loss_rate = 100 * (dropped / total_expected) if total_expected > 0 else 0
             self.eeg_first_packet = True
 
-    def update_trigger(self, seq: int, received: int, supplement: int = 0, trigger_value: Optional[int] = None):
+    def update_trigger(self, seq: int, received: int, dropped: int = 0, padded: int = 0, trigger_value: Optional[int] = None):
         """更新 Trigger 统计信息"""
         with self.lock:
             self.trigger_seq = seq
             self.trigger_received = received
-            self.trigger_supplement = supplement
+            self.trigger_dropped = dropped
+            self.trigger_padded = padded
             if self.trigger_first_seq is None:
                 self.trigger_first_seq = seq
-            total_expected = received + supplement
-            self.trigger_loss_rate = 100 * (supplement / total_expected) if total_expected > 0 else 0
+            total_expected = received + dropped
+            self.trigger_loss_rate = 100 * (dropped / total_expected) if total_expected > 0 else 0
             if trigger_value is not None and trigger_value != 0:
                 self.last_trigger_value = trigger_value
             self.trigger_first_packet = True
@@ -102,14 +106,18 @@ class RealtimeStats:
                     "sequence": self.eeg_seq,
                     "received": self.eeg_received,
                     "loss_rate": round(self.eeg_loss_rate, 4),
-                    "supplement": self.eeg_supplement,
+                    "dropped": self.eeg_dropped,
+                    "padded": self.eeg_padded,
+                    "supplement": self.eeg_padded,
                 },
                 "trigger": {
                     "connected": self.trigger_connected,
                     "sequence": self.trigger_seq,
                     "received": self.trigger_received,
                     "loss_rate": round(self.trigger_loss_rate, 4),
-                    "supplement": self.trigger_supplement,
+                    "dropped": self.trigger_dropped,
+                    "padded": self.trigger_padded,
+                    "supplement": self.trigger_padded,
                     "last_value": self.last_trigger_value,
                 },
                 "recording": self.recording,
@@ -123,13 +131,15 @@ class RealtimeStats:
             self.eeg_seq = 0
             self.eeg_received = 0
             self.eeg_loss_rate = 0.0
-            self.eeg_supplement = 0
+            self.eeg_dropped = 0
+            self.eeg_padded = 0
             self.eeg_first_packet = False
             self.eeg_first_seq = None
             self.trigger_seq = 0
             self.trigger_received = 0
             self.trigger_loss_rate = 0.0
-            self.trigger_supplement = 0
+            self.trigger_dropped = 0
+            self.trigger_padded = 0
             self.trigger_first_packet = False
             self.trigger_first_seq = None
             self.last_trigger_value = 0
@@ -140,6 +150,55 @@ class RealtimeStats:
 
 # 全局统计实例
 realtime_stats = RealtimeStats()
+
+
+class PacketLossTracker:
+    """
+    Detect missing packet indices robustly (duplicates and 32-bit wrap-around).
+
+    The tracker is independent of recording/padding so loss rate reflects transport/device continuity.
+    """
+
+    def __init__(self, index_bits: int = 32, reset_gap_threshold: int = 1_000_000):
+        self._mask = (1 << index_bits) - 1
+        self._reset_gap_threshold = reset_gap_threshold
+        self.first_index: Optional[int] = None
+        self.last_index: Optional[int] = None
+        self.received = 0
+        self.dropped = 0
+        self.duplicates = 0
+        self.resets = 0
+
+    def observe(self, current_index: int) -> int:
+        current_index = int(current_index) & self._mask
+        if self.first_index is None:
+            self.first_index = current_index
+            self.last_index = current_index
+            self.received = 1
+            return 0
+
+        assert self.last_index is not None
+        delta = (current_index - self.last_index) & self._mask
+
+        if delta == 0:
+            self.received += 1
+            self.duplicates += 1
+            return 0
+
+        if delta > self._reset_gap_threshold:
+            self.resets += 1
+            self.first_index = current_index
+            self.last_index = current_index
+            self.received = 1
+            self.dropped = 0
+            self.duplicates = 0
+            return 0
+
+        missing = max(0, delta - 1)
+        self.received += 1
+        self.dropped += missing
+        self.last_index = current_index
+        return missing
 
 
 class FrameParser:
@@ -557,17 +616,15 @@ def _stream_writer_thread(eeg_buffer: StreamBuffer, trigger_buffer: StreamBuffer
             writer.write_trigger_chunk(data.flatten().astype(np.int32))
 
 
-def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionManager,
-                       eeg_device_ip: str):
+def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionManager):
     """处理 EEG 设备连接"""
     global EEG_CONNECTED
     EEG_CONNECTED = True
     realtime_stats.eeg_connected = True
 
     eeg_parser = FrameParser(start_bytes=EEG_BOX_START_BYTES)
-    last_packet_index = None
-    supplement_count = 0
-    received_count = 0
+    loss_tracker = PacketLossTracker()
+    padded_count = 0
     last_data = None
     update_interval = 2000
 
@@ -576,25 +633,25 @@ def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionMan
             result = eeg_parser.process_bytes(client_socket)
             current_index = result[1]
             current_data = result[2]
-            received_count += 1
+            missing = loss_tracker.observe(current_index)
 
             if session_manager.is_recording and session_manager.eeg_buffer:
                 # 丢包补偿：用前一帧数据填充
-                if last_packet_index is not None:
-                    missing = current_index - last_packet_index - 1
-                    if missing > 0 and last_data is not None:
-                        for _ in range(missing):
-                            session_manager.eeg_buffer.write(last_data)
-                        supplement_count += missing
+                if missing > 0 and last_data is not None:
+                    pad_packets = min(missing, 10_000)
+                    for _ in range(pad_packets):
+                        session_manager.eeg_buffer.write(last_data)
+                    padded_count += pad_packets
 
                 session_manager.eeg_buffer.write(current_data)
-                session_manager.stats["packets_received"] += 1
-
-            last_packet_index = current_index
             last_data = current_data.copy()
 
-            if received_count % update_interval == 0:
-                realtime_stats.update_eeg(current_index, received_count, supplement_count)
+            with session_manager.lock:
+                session_manager.stats["packets_received"] = loss_tracker.received
+                session_manager.stats["packets_dropped"] = loss_tracker.dropped
+
+            if loss_tracker.received % update_interval == 0:
+                realtime_stats.update_eeg(current_index, loss_tracker.received, loss_tracker.dropped, padded_count)
 
     except Exception:
         pass
@@ -604,17 +661,15 @@ def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionMan
         client_socket.close()
 
 
-def _handle_trigger_client(client_socket: socket.socket, session_manager: SessionManager,
-                           trigger_device_ip: str):
+def _handle_trigger_client(client_socket: socket.socket, session_manager: SessionManager):
     """处理 Trigger 设备连接"""
     global TRIGGER_CONNECTED
     TRIGGER_CONNECTED = True
     realtime_stats.trigger_connected = True
 
     trigger_parser = FrameParser(start_bytes=TRIGGER_BOX_START_BYTES)
-    last_packet_index = None
-    supplement_count = 0
-    received_count = 0
+    loss_tracker = PacketLossTracker()
+    padded_count = 0
     update_interval = 2000
 
     try:
@@ -622,26 +677,27 @@ def _handle_trigger_client(client_socket: socket.socket, session_manager: Sessio
             result = trigger_parser.process_bytes(client_socket)
             current_index = result[1]
             current_trigger = result[2]
-            received_count += 1
+            missing = loss_tracker.observe(current_index)
 
             if session_manager.is_recording and session_manager.trigger_buffer:
                 # 丢包补偿：用 0 填充
-                if last_packet_index is not None:
-                    missing = current_index - last_packet_index - 1
-                    if missing > 0:
-                        for _ in range(missing):
-                            session_manager.trigger_buffer.write(np.array([0], dtype=np.float32))
-                        supplement_count += missing
+                if missing > 0:
+                    pad_packets = min(missing, 10_000)
+                    for _ in range(pad_packets):
+                        session_manager.trigger_buffer.write(np.array([0], dtype=np.float32))
+                    padded_count += pad_packets
 
                 session_manager.trigger_buffer.write(np.array([current_trigger], dtype=np.float32))
 
-            last_packet_index = current_index
+            with session_manager.lock:
+                session_manager.stats["packets_received"] = loss_tracker.received
+                session_manager.stats["packets_dropped"] = loss_tracker.dropped
 
             if current_trigger != 0:
                 realtime_stats.last_trigger_value = current_trigger
 
-            if received_count % update_interval == 0:
-                realtime_stats.update_trigger(current_index, received_count, supplement_count)
+            if loss_tracker.received % update_interval == 0:
+                realtime_stats.update_trigger(current_index, loss_tracker.received, loss_tracker.dropped, padded_count, trigger_value=None)
 
     except Exception:
         pass
@@ -715,7 +771,7 @@ class EEGDeviceServer:
 
     def send_start_cmd(self):
         """发送启动指令到设备"""
-        for _ in range(5):
+        for _ in range(1):
             send_start_instruction(self.host_ip, self.eeg_ip, self.trigger_ip)
             time.sleep(0.1)
 
@@ -745,14 +801,14 @@ class EEGDeviceServer:
                 if client_ip == self.eeg_ip:
                     t = threading.Thread(
                         target=_handle_eeg_client,
-                        args=(client_socket, self.session_manager, self.eeg_ip),
+                        args=(client_socket, self.session_manager),
                         daemon=True
                     )
                     t.start()
                 elif client_ip == self.trigger_ip:
                     t = threading.Thread(
                         target=_handle_trigger_client,
-                        args=(client_socket, self.session_manager, self.trigger_ip),
+                        args=(client_socket, self.session_manager),
                         daemon=True
                     )
                     t.start()

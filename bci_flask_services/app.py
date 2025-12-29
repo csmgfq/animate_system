@@ -248,7 +248,11 @@ def create_app():
     db.init_app(app)
     
     # 启用 CORS
-    CORS(app)
+    # Enable cookies for session-based minimal auth.
+    CORS(app, supports_credentials=True)
+
+    # Flask session requires a secret key (signed cookie).
+    app.config.setdefault("SECRET_KEY", os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change-me"))
     
     print("\n" + "="*60)
     print("🚀 Flask 模块化单体应用启动中...")

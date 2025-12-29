@@ -4,9 +4,7 @@
       <template #header>
         <div class="card-header">
           <span>脑电设备状态</span>
-          <el-button type="primary" size="small" @click="refreshStatus">
-            刷新
-          </el-button>
+          <el-button type="primary" size="small" @click="refreshStatus">刷新</el-button>
         </div>
       </template>
 
@@ -34,89 +32,49 @@
       </el-descriptions>
     </el-card>
 
-    <!-- 控制按钮 -->
     <el-card class="control-card">
-      <template #header>
-        <span>设备控制</span>
-      </template>
-
+      <template #header><span>设备控制</span></template>
       <el-space wrap>
-        <el-button
-          type="primary"
-          @click="startServer"
-        >
-          启动服务器
-        </el-button>
-        <el-button
-          type="danger"
-          @click="stopServer"
-        >
-          停止服务器
-        </el-button>
-        <el-button
-          type="warning"
-          @click="sendStartCmd"
-          :disabled="!status.server_running"
-        >
-          发送启动指令
-        </el-button>
+        <el-button type="primary" @click="startServer">启动服务器</el-button>
+        <el-button type="danger" @click="stopServer">停止服务器</el-button>
+        <el-button type="warning" @click="sendStartCmd" :disabled="!status.server_running">发送启动指令</el-button>
       </el-space>
     </el-card>
 
-    <!-- 录制控制 -->
     <el-card class="record-card">
-      <template #header>
-        <span>录制控制</span>
-      </template>
-
+      <template #header><span>录制控制</span></template>
       <el-space wrap>
-        <el-button
-          type="success"
-          size="large"
-          @click="startRecording"
-          :disabled="status.recording || !status.server_running"
-        >
+        <el-button type="success" size="large" @click="startRecording" :disabled="status.recording || !status.server_running">
           <el-icon><VideoPlay /></el-icon>
           开始录制
         </el-button>
-        <el-button
-          type="danger"
-          size="large"
-          @click="stopRecording"
-          :disabled="!status.recording"
-        >
+        <el-button type="danger" size="large" @click="stopRecording" :disabled="!status.recording">
           <el-icon><VideoPause /></el-icon>
           停止录制
         </el-button>
       </el-space>
 
       <div v-if="status.recording" class="recording-info">
-        <el-tag type="warning" effect="dark" size="large">
-          录制中: {{ status.session_id }}
-        </el-tag>
-        <p>时长: {{ formatDuration(status.duration) }}</p>
+        <el-tag type="warning" effect="dark" size="large">录制中：{{ status.session_id }}</el-tag>
+        <p>时长：{{ formatDuration(status.duration) }}</p>
       </div>
     </el-card>
 
-    <!-- 实时统计 -->
     <el-card v-if="realtime" class="stats-card">
-      <template #header>
-        <span>实时统计</span>
-      </template>
+      <template #header><span>实时统计</span></template>
 
       <el-row :gutter="20">
-        <el-col :span="12">
-          <el-statistic title="EEG 接收包数" :value="realtime.eeg?.received || 0" />
-        </el-col>
-        <el-col :span="12">
-          <el-statistic title="EEG 丢包率" :value="realtime.eeg?.loss_rate || 0" suffix="%" />
-        </el-col>
-        <el-col :span="12">
-          <el-statistic title="Trigger 接收包数" :value="realtime.trigger?.received || 0" />
-        </el-col>
-        <el-col :span="12">
-          <el-statistic title="最后触发值" :value="realtime.trigger?.last_value || 0" />
-        </el-col>
+        <el-col :span="12"><el-statistic title="EEG 接收包数" :value="realtime.eeg?.received || 0" /></el-col>
+        <el-col :span="12"><el-statistic title="EEG 丢包率" :value="realtime.eeg?.loss_rate || 0" suffix="%" /></el-col>
+        <el-col :span="12"><el-statistic title="EEG 丢包数" :value="realtime.eeg?.dropped || 0" /></el-col>
+        <el-col :span="12"><el-statistic title="EEG 补写数" :value="realtime.eeg?.padded || realtime.eeg?.supplement || 0" /></el-col>
+
+        <el-col :span="12"><el-statistic title="Trigger 接收包数" :value="realtime.trigger?.received || 0" /></el-col>
+        <el-col :span="12"><el-statistic title="Trigger 丢包率" :value="realtime.trigger?.loss_rate || 0" suffix="%" /></el-col>
+        <el-col :span="12"><el-statistic title="Trigger 丢包数" :value="realtime.trigger?.dropped || 0" /></el-col>
+        <el-col :span="12"><el-statistic title="Trigger 补写数" :value="realtime.trigger?.padded || realtime.trigger?.supplement || 0" /></el-col>
+
+        <el-col :span="12"><el-statistic title="最后触发值" :value="realtime.trigger?.last_value || 0" /></el-col>
       </el-row>
     </el-card>
   </div>
@@ -151,6 +109,19 @@ export default {
     this.stopPolling()
   },
   methods: {
+    getAuthHeaders() {
+      try {
+        const raw = localStorage.getItem('currentUser')
+        if (!raw) return {}
+        const user = JSON.parse(raw)
+        const headers = {}
+        if (user?.id != null) headers['X-User-Id'] = String(user.id)
+        if (user?.account) headers['X-User-Account'] = String(user.account)
+        return headers
+      } catch (e) {
+        return {}
+      }
+    },
     async refreshStatus() {
       try {
         const res = await fetch(`${getApiBaseUrl()}/api/eeg/status`)
@@ -167,7 +138,7 @@ export default {
           this.realtime = data.data.realtime
         }
       } catch (e) {
-        console.error('获取状态失败:', e)
+        console.error('获取状态失败', e)
       }
     },
     startPolling() {
@@ -209,14 +180,14 @@ export default {
       }
     },
     async startRecording() {
-      const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}')
+      const currentUser = JSON.parse(localStorage.getItem('currentUser') || '{}')
       try {
         const res = await fetch(`${getApiBaseUrl()}/api/eeg/recording/start`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...this.getAuthHeaders() },
           body: JSON.stringify({
-            user_id: userInfo.id,
-            user_account: userInfo.account
+            user_id: currentUser.id,
+            user_account: currentUser.account
           })
         })
         const data = await res.json()
@@ -228,7 +199,10 @@ export default {
     },
     async stopRecording() {
       try {
-        const res = await fetch(`${getApiBaseUrl()}/api/eeg/recording/stop`, { method: 'POST' })
+        const res = await fetch(`${getApiBaseUrl()}/api/eeg/recording/stop`, {
+          method: 'POST',
+          headers: { ...this.getAuthHeaders() }
+        })
         const data = await res.json()
         this.$message({ type: data.code ? 'success' : 'error', message: data.msg })
         this.refreshStatus()

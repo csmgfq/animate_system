@@ -18,6 +18,7 @@ def json_response(code=1, msg="success", data=None):
 def list_music():
     """查询音乐（默认仅返回当前用户；管理员可返回全部）"""
     current = get_current_user()
+    # print(f"music {current.id}")
     if not current:
         return json_response(code=0, msg="unauthorized"), 401
 

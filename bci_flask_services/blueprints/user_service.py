@@ -62,7 +62,6 @@ def login():
     if (user.password or "") != password:
         return json_response(code=0, msg="invalid password"), 401
 
-    # 不实现复杂鉴权，返回用户信息供前端保存
     return json_response(data={"user": user.to_dict()})
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from flask import request
+from flask import request, session
 
 from bci_flask_services.models import User
 

@@ -5,6 +5,7 @@
 from flask import Blueprint, jsonify, request, current_app
 from pathlib import Path
 from datetime import datetime
+from bci_flask_services.core.auth import get_current_user
 
 eeg_bp = Blueprint('eeg_service', __name__)
 
@@ -53,8 +54,8 @@ def get_status():
         realtime = realtime_stats.get_stats()
     except Exception:
         realtime = {
-            "eeg": {"connected": False, "received": 0, "loss_rate": 0},
-            "trigger": {"connected": False, "received": 0, "last_value": 0},
+            "eeg": {"connected": False, "received": 0, "loss_rate": 0, "dropped": 0, "padded": 0},
+            "trigger": {"connected": False, "received": 0, "loss_rate": 0, "dropped": 0, "padded": 0, "last_value": 0},
             "recording": False,
             "session_id": "",
             "duration": 0
@@ -126,10 +127,13 @@ def start_recording():
     if _session_manager is None:
         return jsonify({"code": 0, "msg": "EEG service not initialized"}), 503
 
-    # 获取用户信息
-    data = request.get_json() or {}
-    user_id = data.get("user_id")
-    user_account = data.get("user_account")
+    # 获取用户信息：优先使用 core.auth.get_current_user()（与 user_service 一致）
+    # 建议前端统一在请求头带 X-User-Id / X-User-Account；保留 body 兼容字段作为兜底。
+    current = get_current_user()
+    user_id = current.id
+    user_account = current.account
+    if user_id is None and user_account is None:
+        return jsonify({"code": 0, "msg": "unauthorized: missing user identity"}), 401
 
     # 调用带用户信息的录制
     success, result = _session_manager.start_new_session(
