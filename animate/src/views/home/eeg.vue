@@ -89,6 +89,7 @@
 import { VideoPlay, VideoPause } from '@element-plus/icons-vue'
 import { getApiBaseUrl } from '@/api/baseUrl'
 import * as echarts from 'echarts'
+import { io } from 'socket.io-client'
 
 export default {
   name: 'EegControl',
@@ -104,10 +105,9 @@ export default {
         duration: 0
       },
       realtime: null,
-      pollTimer: null,
+      socket: null,  // WebSocket 连接
       // 波形图相关
       waveformEnabled: false,
-      waveformTimer: null,
       waveformChart: null,
       selectedChannels: [0, 1, 2, 3],  // 默认选择前4个通道
       sampleRate: 1000,
@@ -115,18 +115,61 @@ export default {
     }
   },
   mounted() {
+    this.initSocket()
     this.refreshStatus()
-    this.startPolling()
   },
   beforeUnmount() {
-    this.stopPolling()
-    this.stopWaveform()
+    this.disconnectSocket()
     if (this.waveformChart) {
       this.waveformChart.dispose()
       this.waveformChart = null
     }
   },
   methods: {
+    // WebSocket 连接管理
+    initSocket() {
+      const baseUrl = getApiBaseUrl()
+      this.socket = io(baseUrl + '/eeg', {
+        transports: ['websocket', 'polling']
+      })
+
+      // 监听状态更新
+      this.socket.on('eeg_status', (data) => {
+        this.status = {
+          eeg_connected: data.eeg?.connected || false,
+          trigger_connected: data.trigger?.connected || false,
+          server_running: this.status.server_running,
+          recording: data.recording || false,
+          session_id: data.session_id || '',
+          duration: data.duration || 0
+        }
+        this.realtime = data
+      })
+
+      // 监听波形数据
+      this.socket.on('waveform_data', (data) => {
+        if (this.waveformEnabled && data.data) {
+          this.updateWaveformFromSocket(data)
+        }
+      })
+
+      this.socket.on('connect', () => {
+        console.log('WebSocket 已连接')
+      })
+
+      this.socket.on('disconnect', () => {
+        console.log('WebSocket 已断开')
+      })
+    },
+    disconnectSocket() {
+      if (this.socket) {
+        if (this.waveformEnabled) {
+          this.socket.emit('stop_waveform')
+        }
+        this.socket.disconnect()
+        this.socket = null
+      }
+    },
     getAuthHeaders() {
       try {
         const raw = localStorage.getItem('currentUser')
@@ -145,27 +188,19 @@ export default {
         const res = await fetch(`${getApiBaseUrl()}/api/eeg/status`)
         const data = await res.json()
         if (data.code === 1) {
-          this.status = {
-            eeg_connected: data.data.realtime?.eeg?.connected || false,
-            trigger_connected: data.data.realtime?.trigger?.connected || false,
-            server_running: data.data.server_running || false,
-            recording: data.data.realtime?.recording || false,
-            session_id: data.data.realtime?.session_id || '',
-            duration: data.data.realtime?.duration || 0
+          this.status.server_running = data.data.server_running || false
+          // 其他状态由 WebSocket 更新
+          if (!this.socket || !this.socket.connected) {
+            this.status.eeg_connected = data.data.realtime?.eeg?.connected || false
+            this.status.trigger_connected = data.data.realtime?.trigger?.connected || false
+            this.status.recording = data.data.realtime?.recording || false
+            this.status.session_id = data.data.realtime?.session_id || ''
+            this.status.duration = data.data.realtime?.duration || 0
+            this.realtime = data.data.realtime
           }
-          this.realtime = data.data.realtime
         }
       } catch (e) {
         console.error('获取状态失败', e)
-      }
-    },
-    startPolling() {
-      this.pollTimer = setInterval(() => this.refreshStatus(), 2000)
-    },
-    stopPolling() {
-      if (this.pollTimer) {
-        clearInterval(this.pollTimer)
-        this.pollTimer = null
       }
     },
     async startServer() {
@@ -244,14 +279,20 @@ export default {
     startWaveform() {
       this.waveformEnabled = true
       this.initChart()
-      this.fetchWaveformData()
-      this.waveformTimer = setInterval(() => this.fetchWaveformData(), 1000)
+      // 通过 WebSocket 请求波形数据
+      if (this.socket && this.socket.connected) {
+        this.socket.emit('start_waveform', {
+          channels: this.selectedChannels,
+          duration: this.displayDuration,
+          interval: 0.5  // 500ms 推送一次
+        })
+      }
     },
     stopWaveform() {
       this.waveformEnabled = false
-      if (this.waveformTimer) {
-        clearInterval(this.waveformTimer)
-        this.waveformTimer = null
+      // 通知服务器停止推送
+      if (this.socket && this.socket.connected) {
+        this.socket.emit('stop_waveform')
       }
     },
     selectAllChannels() {
@@ -323,35 +364,19 @@ export default {
       }
       this.waveformChart.setOption(option, true)
     },
-    async fetchWaveformData() {
-      if (!this.waveformEnabled || this.selectedChannels.length === 0) return
+    // 从 WebSocket 更新波形数据
+    updateWaveformFromSocket(data) {
+      if (!this.waveformEnabled || !data.data) return
 
-      try {
-        const channels = this.selectedChannels.join(',')
-        const url = `${getApiBaseUrl()}/api/eeg/waveform?duration=${this.displayDuration}&channels=${channels}`
-        const res = await fetch(url)
-        const json = await res.json()
+      const sampleRate = data.sample_rate || 100
+      const seriesData = data.data.map(channelData => {
+        return channelData.map((value, i) => {
+          const time = (i / sampleRate).toFixed(3)
+          return [parseFloat(time), value]
+        })
+      })
 
-        if (json.code === 1 && json.data && json.data.data) {
-          const rawData = json.data.data
-          const sampleRate = json.data.sample_rate || this.sampleRate
-
-          // 降采样以提高性能（每10个点取1个）
-          const downsampleFactor = 10
-          const seriesData = rawData.map(channelData => {
-            const result = []
-            for (let i = 0; i < channelData.length; i += downsampleFactor) {
-              const time = (i / sampleRate).toFixed(3)
-              result.push([parseFloat(time), channelData[i]])
-            }
-            return result
-          })
-
-          this.updateChartOption(seriesData)
-        }
-      } catch (e) {
-        console.error('获取波形数据失败', e)
-      }
+      this.updateChartOption(seriesData)
     }
   }
 }

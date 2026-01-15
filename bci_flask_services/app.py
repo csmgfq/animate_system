@@ -47,6 +47,7 @@ sys.path.insert(0, str(project_root))
 try:
     from flask import Flask, jsonify, request, send_from_directory
     from flask_cors import CORS
+    from flask_socketio import SocketIO
     from sqlalchemy import inspect
     from sqlalchemy import text
     from sqlalchemy import create_engine
@@ -54,6 +55,9 @@ try:
     from sqlalchemy.exc import OperationalError
 except ModuleNotFoundError as e:
     _exit_with_missing_dependency(e)
+
+# 全局 SocketIO 实例（在 create_app 中初始化）
+socketio: SocketIO = None
 
 from bci_flask_services import config
 
@@ -241,18 +245,23 @@ def _sync_music_files(inspector):
 
 def create_app():
     """Flask 应用工厂函数"""
+    global socketio
+
     # 配置静态文件夹
     static_folder = str(config.STATIC_FOLDER) if hasattr(config, 'STATIC_FOLDER') else None
     app = Flask(__name__, static_folder=static_folder)
     app.config.from_object(config)
     db.init_app(app)
-    
+
     # 启用 CORS
     # Enable cookies for session-based minimal auth.
     CORS(app, supports_credentials=True)
 
     # Flask session requires a secret key (signed cookie).
     app.config.setdefault("SECRET_KEY", os.getenv("FLASK_SECRET_KEY", "dev-secret-key-change-me"))
+
+    # 初始化 SocketIO（支持跨域）
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
     
     print("\n" + "="*60)
     print("🚀 Flask 模块化单体应用启动中...")
@@ -290,10 +299,11 @@ def create_app():
             port=getattr(config, "EEG_SERVER_PORT", 5001),
             eeg_ip=getattr(config, "EEG_DEVICE_IP", "192.168.1.102"),
             trigger_ip=getattr(config, "EEG_TRIGGER_IP", "192.168.1.103"),
-            session_manager=eeg_session_manager
+            session_manager=eeg_session_manager,
+            socketio=socketio  # 传递 SocketIO 实例
         )
 
-        init_eeg_service(eeg_server, eeg_session_manager)
+        init_eeg_service(eeg_server, eeg_session_manager, socketio)
         eeg_initialized = True
 
         # 可选：自动启动 TCP 服务器
@@ -708,17 +718,19 @@ if __name__ == "__main__":
 
 
     def _run_server() -> None:
-        # 桌面模式默认只监听本机；如需“桌面 + 局域网共存”，设置 BCI_DESKTOP_BIND_ALL=1
+        # 桌面模式默认只监听本机；如需"桌面 + 局域网共存"，设置 BCI_DESKTOP_BIND_ALL=1
         if desktop_mode:
             bind_host = "0.0.0.0" if desktop_bind_all else "127.0.0.1"
         else:
             bind_host = host_cfg
-        app.run(
+        # 使用 SocketIO 启动（支持 WebSocket）
+        socketio.run(
+            app,
             host=bind_host,
             port=port_cfg,
             debug=debug,
             use_reloader=False,  # 禁用热重载，避免重复启动
-            threaded=True,
+            allow_unsafe_werkzeug=True  # 允许在生产环境使用 werkzeug
         )
 
 

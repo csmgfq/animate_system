@@ -1,6 +1,7 @@
 """
 脑电读写服务 Blueprint
 提供 EEG 设备连接、录制控制和状态查询的 REST API
+支持 WebSocket 实时数据推送
 """
 from flask import Blueprint, jsonify, request, current_app
 from pathlib import Path
@@ -12,13 +13,19 @@ eeg_bp = Blueprint('eeg_service', __name__)
 # 全局引用（在 app.py 中初始化）
 _eeg_server = None
 _session_manager = None
+_socketio = None
 
 
-def init_eeg_service(eeg_server, session_manager):
+def init_eeg_service(eeg_server, session_manager, socketio=None):
     """初始化 EEG 服务（由 app.py 调用）"""
-    global _eeg_server, _session_manager
+    global _eeg_server, _session_manager, _socketio
     _eeg_server = eeg_server
     _session_manager = session_manager
+    _socketio = socketio
+
+    # 注册 SocketIO 事件处理
+    if _socketio:
+        _register_socketio_events(_socketio)
 
 
 @eeg_bp.route("/health", methods=["GET"])
@@ -295,3 +302,74 @@ def _save_session_to_db(session_id: str):
 
     db.session.add(record)
     db.session.commit()
+
+
+def _register_socketio_events(socketio):
+    """注册 SocketIO 事件处理"""
+    from bci_flask_services.core.eeg import realtime_stats, realtime_display_buffer
+
+    # 波形推送线程控制
+    waveform_thread = None
+    waveform_running = False
+
+    @socketio.on('connect', namespace='/eeg')
+    def handle_connect():
+        """客户端连接"""
+        print('📡 EEG WebSocket 客户端已连接')
+        # 立即发送当前状态
+        socketio.emit('eeg_status', realtime_stats.get_stats(), namespace='/eeg')
+
+    @socketio.on('disconnect', namespace='/eeg')
+    def handle_disconnect():
+        """客户端断开"""
+        print('📡 EEG WebSocket 客户端已断开')
+
+    @socketio.on('start_waveform', namespace='/eeg')
+    def handle_start_waveform(data):
+        """开始推送波形数据"""
+        nonlocal waveform_thread, waveform_running
+
+        channels = data.get('channels', [0, 1, 2, 3])
+        duration = data.get('duration', 2.0)
+        interval = data.get('interval', 0.5)  # 推送间隔（秒）
+
+        if waveform_running:
+            return
+
+        waveform_running = True
+
+        def push_waveform():
+            nonlocal waveform_running
+            sample_rate = realtime_display_buffer.sample_rate
+            n_samples = int(duration * sample_rate)
+
+            while waveform_running:
+                try:
+                    result = realtime_display_buffer.get_data(last_n_samples=n_samples)
+                    if result["data"]:
+                        # 筛选指定通道
+                        filtered = [result["data"][i] for i in channels
+                                   if 0 <= i < len(result["data"])]
+                        # 降采样
+                        downsampled = []
+                        for ch_data in filtered:
+                            sampled = ch_data[::10]  # 每10个点取1个
+                            downsampled.append(sampled)
+
+                        socketio.emit('waveform_data', {
+                            'channels': channels,
+                            'sample_rate': sample_rate // 10,
+                            'data': downsampled
+                        }, namespace='/eeg')
+
+                    socketio.sleep(interval)
+                except Exception:
+                    break
+
+        waveform_thread = socketio.start_background_task(push_waveform)
+
+    @socketio.on('stop_waveform', namespace='/eeg')
+    def handle_stop_waveform():
+        """停止推送波形数据"""
+        nonlocal waveform_running
+        waveform_running = False

@@ -691,7 +691,7 @@ def _stream_writer_thread(eeg_buffer: StreamBuffer, trigger_buffer: StreamBuffer
             writer.write_trigger_chunk(data.flatten().astype(np.int32))
 
 
-def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionManager):
+def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionManager, socketio=None):
     """处理 EEG 设备连接"""
     global EEG_CONNECTED
     EEG_CONNECTED = True
@@ -702,6 +702,9 @@ def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionMan
     padded_count = 0
     last_data = None
     update_interval = 2000
+    # WebSocket 推送间隔（每100个样本推送一次状态，约100ms）
+    ws_push_interval = 100
+    ws_push_counter = 0
 
     try:
         while True:
@@ -731,6 +734,15 @@ def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionMan
             if loss_tracker.received % update_interval == 0:
                 realtime_stats.update_eeg(current_index, loss_tracker.received, loss_tracker.dropped, padded_count)
 
+            # WebSocket 推送状态（降低频率，避免过载）
+            ws_push_counter += 1
+            if socketio and ws_push_counter >= ws_push_interval:
+                ws_push_counter = 0
+                try:
+                    socketio.emit('eeg_status', realtime_stats.get_stats(), namespace='/eeg')
+                except Exception:
+                    pass
+
     except Exception:
         pass
     finally:
@@ -739,7 +751,7 @@ def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionMan
         client_socket.close()
 
 
-def _handle_trigger_client(client_socket: socket.socket, session_manager: SessionManager):
+def _handle_trigger_client(client_socket: socket.socket, session_manager: SessionManager, socketio=None):
     """处理 Trigger 设备连接"""
     global TRIGGER_CONNECTED
     TRIGGER_CONNECTED = True
@@ -749,6 +761,9 @@ def _handle_trigger_client(client_socket: socket.socket, session_manager: Sessio
     loss_tracker = PacketLossTracker()
     padded_count = 0
     update_interval = 2000
+    # WebSocket 推送间隔
+    ws_push_interval = 100
+    ws_push_counter = 0
 
     try:
         while True:
@@ -776,6 +791,15 @@ def _handle_trigger_client(client_socket: socket.socket, session_manager: Sessio
 
             if loss_tracker.received % update_interval == 0:
                 realtime_stats.update_trigger(current_index, loss_tracker.received, loss_tracker.dropped, padded_count, trigger_value=None)
+
+            # WebSocket 推送状态
+            ws_push_counter += 1
+            if socketio and ws_push_counter >= ws_push_interval:
+                ws_push_counter = 0
+                try:
+                    socketio.emit('eeg_status', realtime_stats.get_stats(), namespace='/eeg')
+                except Exception:
+                    pass
 
     except Exception:
         pass
@@ -814,12 +838,13 @@ class EEGDeviceServer:
     """
 
     def __init__(self, host_ip: str, port: int, eeg_ip: str, trigger_ip: str,
-                 session_manager: SessionManager):
+                 session_manager: SessionManager, socketio=None):
         self.host_ip = host_ip
         self.port = port
         self.eeg_ip = eeg_ip
         self.trigger_ip = trigger_ip
         self.session_manager = session_manager
+        self.socketio = socketio  # SocketIO 实例用于推送数据
         self.server_socket = None
         self.running = False
         self.server_thread = None
@@ -879,14 +904,14 @@ class EEGDeviceServer:
                 if client_ip == self.eeg_ip:
                     t = threading.Thread(
                         target=_handle_eeg_client,
-                        args=(client_socket, self.session_manager),
+                        args=(client_socket, self.session_manager, self.socketio),
                         daemon=True
                     )
                     t.start()
                 elif client_ip == self.trigger_ip:
                     t = threading.Thread(
                         target=_handle_trigger_client,
-                        args=(client_socket, self.session_manager),
+                        args=(client_socket, self.session_manager, self.socketio),
                         daemon=True
                     )
                     t.start()
