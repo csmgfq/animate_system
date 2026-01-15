@@ -152,6 +152,81 @@ class RealtimeStats:
 realtime_stats = RealtimeStats()
 
 
+class RealtimeDisplayBuffer:
+    """
+    实时显示缓冲区 - 环形缓冲区，用于前端波形展示
+    独立于录制状态，始终保存最近 N 秒的数据
+    """
+    def __init__(self, num_channels: int = EEG_DEVICE_CHANNELS,
+                 sample_rate: int = 1000, duration_sec: float = 5.0):
+        self.num_channels = num_channels
+        self.sample_rate = sample_rate
+        self.buffer_size = int(sample_rate * duration_sec)
+        self.buffer = np.zeros((num_channels, self.buffer_size), dtype=np.float32)
+        self.write_idx = 0
+        self.total_samples = 0
+        self.lock = threading.Lock()
+
+    def write(self, data: np.ndarray):
+        """写入单个样本（线程安全，环形覆盖）"""
+        with self.lock:
+            if data.ndim == 1 and len(data) == self.num_channels:
+                self.buffer[:, self.write_idx] = data
+            self.write_idx = (self.write_idx + 1) % self.buffer_size
+            self.total_samples += 1
+
+    def get_data(self, last_n_samples: int = None) -> dict:
+        """获取最近 N 个样本的数据"""
+        with self.lock:
+            if last_n_samples is None:
+                last_n_samples = self.buffer_size
+
+            # 计算实际可用样本数
+            available = min(self.total_samples, self.buffer_size)
+            n = min(last_n_samples, available)
+
+            if n == 0:
+                return {
+                    "channels": self.num_channels,
+                    "samples": 0,
+                    "sample_rate": self.sample_rate,
+                    "data": []
+                }
+
+            # 从环形缓冲区提取数据（按时间顺序）
+            if self.total_samples < self.buffer_size:
+                # 缓冲区未满，从头开始
+                start = max(0, self.write_idx - n)
+                data = self.buffer[:, start:self.write_idx].copy()
+            else:
+                # 缓冲区已满，需要处理环形
+                end_idx = self.write_idx
+                start_idx = (end_idx - n) % self.buffer_size
+
+                if start_idx < end_idx:
+                    data = self.buffer[:, start_idx:end_idx].copy()
+                else:
+                    # 跨越边界
+                    part1 = self.buffer[:, start_idx:]
+                    part2 = self.buffer[:, :end_idx]
+                    data = np.concatenate([part1, part2], axis=1)
+
+            return {
+                "channels": self.num_channels,
+                "samples": data.shape[1],
+                "sample_rate": self.sample_rate,
+                "data": data.tolist()
+            }
+
+
+# 全局实时显示缓冲区（5秒数据，采样率1000Hz）
+realtime_display_buffer = RealtimeDisplayBuffer(
+    num_channels=EEG_DEVICE_CHANNELS,
+    sample_rate=1000,
+    duration_sec=5.0
+)
+
+
 class PacketLossTracker:
     """
     Detect missing packet indices robustly (duplicates and 32-bit wrap-around).
@@ -645,6 +720,9 @@ def _handle_eeg_client(client_socket: socket.socket, session_manager: SessionMan
 
                 session_manager.eeg_buffer.write(current_data)
             last_data = current_data.copy()
+
+            # 始终写入实时显示缓冲区（不依赖录制状态）
+            realtime_display_buffer.write(current_data)
 
             with session_manager.lock:
                 session_manager.stats["packets_received"] = loss_tracker.received

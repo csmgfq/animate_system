@@ -201,6 +201,42 @@ def get_realtime_stats():
     return jsonify({"code": 1, "data": realtime_stats.get_stats()})
 
 
+@eeg_bp.route("/waveform", methods=["GET"])
+def get_waveform_data():
+    """获取实时波形数据用于前端展示
+
+    Query params:
+        duration: 请求的数据时长（秒），默认2秒
+        channels: 请求的通道列表，逗号分隔，如 "0,1,2"，默认全部32通道
+    """
+    from bci_flask_services.core.eeg import realtime_display_buffer
+
+    # 解析参数
+    duration = request.args.get("duration", 2.0, type=float)
+    channels_param = request.args.get("channels", "")
+
+    # 计算需要的样本数
+    sample_rate = realtime_display_buffer.sample_rate
+    n_samples = int(duration * sample_rate)
+
+    # 获取数据
+    result = realtime_display_buffer.get_data(last_n_samples=n_samples)
+
+    # 如果指定了通道，只返回指定通道的数据
+    if channels_param and result["data"]:
+        try:
+            channel_indices = [int(c.strip()) for c in channels_param.split(",")]
+            filtered_data = [result["data"][i] for i in channel_indices
+                           if 0 <= i < len(result["data"])]
+            result["data"] = filtered_data
+            result["channels"] = len(filtered_data)
+            result["channel_indices"] = channel_indices
+        except (ValueError, IndexError):
+            pass
+
+    return jsonify({"code": 1, "data": result})
+
+
 def _save_session_to_db(session_id: str):
     """保存会话记录到数据库"""
     from bci_flask_services.db import db
